@@ -3,13 +3,15 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/viggomeesters/obsidian-html-page-viewer/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/viggomeesters/obsidian-html-page-viewer?style=flat-square"></a>
   <a href="LICENSE"><img alt="MIT license" src="https://img.shields.io/badge/license-MIT-green?style=flat-square"></a>
   <img alt="Obsidian 1.5.0+" src="https://img.shields.io/badge/Obsidian-1.5.0%2B-7c3aed?style=flat-square">
   <img alt="Read-only" src="https://img.shields.io/badge/mode-read--only-0f766e?style=flat-square">
+  <img alt="Personal fork" src="https://img.shields.io/badge/status-personal%20fork-8a6d3b?style=flat-square">
 </p>
 
 # HTML Page Viewer
+
+> **Fork notice:** This is a personal fork of [viggomeesters/obsidian-html-page-viewer](https://github.com/viggomeesters/obsidian-html-page-viewer), extended with local vault asset support and a settings tab. It is not submitted to the Obsidian Community plugin directory and publishes no releases; it lives on GitHub for personal use and is installed from source.
 
 HTML Page Viewer is a read-only Obsidian plugin for opening `.html` and `.htm` files as rendered pages inside Obsidian. It is built for local reports, exported dashboards, documentation pages, prototypes, and generated visual artifacts that you want to inspect without leaving the vault.
 
@@ -69,27 +71,17 @@ HTML reports and exported pages are often generated artifacts. HTML Page Viewer 
 
 ## Installation
 
-### Community plugin directory
+This fork is not distributed through the Community plugin directory, BRAT, or GitHub releases. Install it from source:
 
-HTML Page Viewer is ready for submission to the Obsidian Community plugin directory. Once accepted, it can be installed from **Settings -> Community plugins -> Browse** inside Obsidian.
+1. Clone this repository and build it:
 
-### Manual installation
+   ```bash
+   npm install
+   npm run build
+   ```
 
-Until the community directory submission is accepted:
-
-1. Download `main.js`, `manifest.json`, and `styles.css` from the [latest release](https://github.com/viggomeesters/obsidian-html-page-viewer/releases/latest).
-2. Create this folder in your vault: `.obsidian/plugins/html-page-viewer/`.
-3. Put the downloaded files in that folder.
-4. Reload Obsidian.
-5. Enable **HTML Page Viewer** in **Settings -> Community plugins**.
-
-### BRAT installation
-
-For beta testing, install the plugin with [BRAT](https://github.com/TfTHacker/obsidian42-brat) using this repository URL:
-
-```text
-https://github.com/viggomeesters/obsidian-html-page-viewer
-```
+2. Copy `main.js`, `manifest.json`, and `styles.css` into `.obsidian/plugins/html-page-viewer/` inside your vault (or symlink the repository there).
+3. Reload Obsidian and enable **HTML Page Viewer** in **Settings -> Community plugins**.
 
 ## Usage
 
@@ -113,52 +105,13 @@ npm test
 
 For local development, copy or symlink this repository into `.obsidian/plugins/html-page-viewer/` inside an Obsidian vault.
 
-## Release process
+## Releases
 
-Obsidian installs community plugin files from GitHub releases. For each release:
-
-1. Update `manifest.json`, `package.json`, and `versions.json`.
-2. Run `npm install`, `npm run build`, `npx tsc --noEmit`, and `npm test`.
-3. Create a GitHub release whose tag exactly matches `manifest.json.version`.
-4. Attach `main.js`, `manifest.json`, and `styles.css` as release assets.
-
-The repository includes a GitHub Actions release workflow with artifact attestation support. If GitHub Actions is disabled for the owner account, manual releases are still usable for Obsidian, but the Community automated review may show a recommendation about missing artifact attestations.
-
-## Community directory submission
-
-The repository is prepared for Obsidian Community plugin submission. The remaining submission step must be completed by the repository owner in the Obsidian Community site because it requires signing in, linking GitHub, and confirming the developer policies/support commitment.
-
-Submit this repository URL:
-
-```text
-https://github.com/viggomeesters/obsidian-html-page-viewer
-```
-
-Steps:
-
-1. Sign in to [community.obsidian.md](https://community.obsidian.md).
-2. Link the GitHub account that owns this repository.
-3. Open **Plugins -> New plugin**.
-4. Enter the repository URL above.
-5. Confirm the developer policies and submit.
-6. Address any automated review feedback.
-
-The current release is ready for review:
-
-- root `README.md`, `LICENSE`, and `manifest.json` exist
-- `manifest.json.version` is `0.2.0`
-- a GitHub release whose tag matches `manifest.json.version` must exist before submission
-- release assets include `main.js`, `manifest.json`, and `styles.css`
-- `versions.json` maps supported Obsidian versions
-
-Official references:
-
-- [Submit your plugin](https://docs.obsidian.md/Plugins/Releasing/Submit%20your%20plugin)
-- [Obsidian releases repository](https://github.com/obsidianmd/obsidian-releases)
+This fork does not publish GitHub releases or tags; versions in `manifest.json` and `CHANGELOG.md` track the fork's own changes. The upstream release workflow under `.github/workflows/` is retained but unused because it only triggers on tags.
 
 ## Acknowledgements
 
-HTML Page Viewer was built independently, but it was informed by the existing Obsidian HTML viewer ecosystem, including the MIT-licensed [JiaLinZhang24/obsidian-html-viewer](https://github.com/JiaLinZhang24/obsidian-html-viewer). No source code from that project is included in this repository.
+This fork builds on [viggomeesters/obsidian-html-page-viewer](https://github.com/viggomeesters/obsidian-html-page-viewer) by Viggo Meesters. The upstream project was built independently but informed by the existing Obsidian HTML viewer ecosystem, including the MIT-licensed [JiaLinZhang24/obsidian-html-viewer](https://github.com/JiaLinZhang24/obsidian-html-viewer); no source code from that project is included in this repository.
 
 ## License
 

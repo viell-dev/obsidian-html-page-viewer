@@ -21,10 +21,4 @@ For manual testing, copy the repository into `.obsidian/plugins/html-page-viewer
 - Do not add clipboard access without an explicit user action and documentation.
 - Run build, typecheck, and smoke tests before opening a PR.
 
-## Release assets
-
-Community releases must include:
-
-- `main.js`
-- `manifest.json`
-- `styles.css`
+This repository is a personal fork and publishes no releases; see the README's fork notice.

@@ -6,12 +6,12 @@
   "author": "Viggo Meesters",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/viggomeesters/obsidian-html-page-viewer.git"
+    "url": "git+https://github.com/viell-dev/obsidian-html-page-viewer.git"
   },
   "bugs": {
-    "url": "https://github.com/viggomeesters/obsidian-html-page-viewer/issues"
+    "url": "https://github.com/viell-dev/obsidian-html-page-viewer/issues"
   },
-  "homepage": "https://github.com/viggomeesters/obsidian-html-page-viewer#readme",
+  "homepage": "https://github.com/viell-dev/obsidian-html-page-viewer#readme",
   "type": "module",
   "scripts": {
     "build": "NODE_ENV=production node esbuild.config.mjs",
