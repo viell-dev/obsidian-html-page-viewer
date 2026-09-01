@@ -11,6 +11,11 @@ export interface LocalAssetHost {
 
 export type AssetMode = "inline" | "direct";
 
+export interface SandboxSettings {
+  assetMode: AssetMode;
+  enableScripts: boolean;
+}
+
 export interface RewriteOptions {
   /**
    * "inline" embeds assets as data: URIs, the only form the opaque-origin sandbox can use.
@@ -63,10 +68,31 @@ const CSS_URL_PATTERN = /url\(\s*(?:"([^"]*)"|'([^']*)'|([^'")\s][^)]*?))\s*\)/g
 const CSS_IMPORT_PATTERN =
   /@import\s+(?:url\(\s*(?:"([^"]*)"|'([^']*)'|([^'")\s][^)]*?))\s*\)|"([^"]*)"|'([^']*)')([^;]*);/g;
 
-const INLINE_SRC_SELECTOR =
-  "img[src], source[src], video[src], audio[src], embed[src], track[src], input[src]";
-const SRCSET_SELECTOR = "img[srcset], source[srcset]";
-const SVG_REFERENCE_SELECTOR = "image, use";
+interface AttributeRewriteRule {
+  selector: string;
+  attributes: readonly string[];
+  srcset?: boolean;
+  directOnly?: boolean;
+}
+
+/**
+ * Element/attribute pairs that are plain URL rewrites. Elements needing more than an attribute
+ * swap (script inlining, iframe nesting, link-to-style conversion, style blocks) keep bespoke
+ * handlers in rewriteLocalAssets.
+ */
+const ATTRIBUTE_REWRITES: readonly AttributeRewriteRule[] = [
+  {
+    selector: "img[src], source[src], video[src], audio[src], embed[src], track[src], input[src]",
+    attributes: ["src"],
+  },
+  { selector: "img[srcset], source[srcset]", attributes: ["srcset"], srcset: true },
+  { selector: "image, use", attributes: ["href", "xlink:href"] },
+  { selector: "video[poster]", attributes: ["poster"] },
+  { selector: "object[data]", attributes: ["data"] },
+  // Anchors navigate rather than embed, and the opaque-origin sandbox refuses app:// navigation,
+  // so inline mode leaves them verbatim.
+  { selector: "a[href]", attributes: ["href"], directOnly: true },
+];
 
 const MIME_TYPES: Record<string, string> = {
   avif: "image/avif",
@@ -99,6 +125,15 @@ const MIME_TYPES: Record<string, string> = {
   woff: "font/woff",
   woff2: "font/woff2",
 };
+
+/**
+ * Never combine with allow-scripts: a same-origin srcdoc inherits Obsidian's own origin, and
+ * scripts there could reach the app object and, on desktop, Node via the parent window.
+ */
+export function sandboxValue(settings: SandboxSettings): string {
+  if (settings.assetMode === "direct") return "allow-same-origin";
+  return settings.enableScripts ? "allow-scripts" : "";
+}
 
 export function parseTagList(value: string): Set<string> {
   return new Set(
@@ -151,7 +186,14 @@ export function encodeBase64(data: ArrayBuffer | Uint8Array): string {
   return btoa(binary);
 }
 
-export function resolveAssetPath(
+/** Resolves a leading-slash path against the vault root, anything else against ownerDir. */
+function resolveAgainstDir(ownerDir: string, path: string): string | null {
+  return path.startsWith("/")
+    ? normalizeVaultPath(path)
+    : normalizeVaultPath(ownerDir ? `${ownerDir}/${path}` : path);
+}
+
+function resolveAssetPath(
   raw: string,
   ownerDir: string,
   fromPath: string,
@@ -166,9 +208,7 @@ export function resolveAssetPath(
   const decoded = safeDecode(value.slice(0, suffixIndex));
   if (!decoded) return null;
 
-  const direct = decoded.startsWith("/")
-    ? normalizeVaultPath(decoded)
-    : normalizeVaultPath(ownerDir ? `${ownerDir}/${decoded}` : decoded);
+  const direct = resolveAgainstDir(ownerDir, decoded);
   if (direct && host.getFileSize(direct) !== null) {
     return { vaultPath: direct, fragment };
   }
@@ -199,16 +239,12 @@ export async function resolveAssetData(
 ): Promise<string | null> {
   const resolved = resolveAssetPath(raw, ownerDir, fromPath, host);
   if (!resolved) return null;
-
-  const { vaultPath, fragment } = resolved;
-  const size = host.getFileSize(vaultPath);
-  if (size === null || size > maxInlineBytes) return null;
-  const data = await host.readBinary(vaultPath);
+  const data = await readAssetBytes(resolved.vaultPath, host, maxInlineBytes);
   if (data === null) return null;
-  return `data:${mimeTypeFor(vaultPath)};base64,${encodeBase64(data)}${fragment}`;
+  return `data:${mimeTypeFor(resolved.vaultPath)};base64,${encodeBase64(data)}${resolved.fragment}`;
 }
 
-export async function resolveAssetRef(
+async function resolveAssetRef(
   raw: string,
   ownerDir: string,
   fromPath: string,
@@ -275,6 +311,8 @@ export async function rewriteCss(
       depth + 1,
     );
     onRewrite();
+    // Inlining as a data: stylesheet rather than splicing the text keeps @import semantics
+    // (media and supports() conditions) intact, at ~33% base64 overhead per nesting level.
     return `@import url("${textToDataUri("text/css", rewritten)}")${condition};`;
   });
 
@@ -305,6 +343,7 @@ export async function rewriteLocalAssets(
   options: RewriteOptions,
   depth = 0,
 ): Promise<RewriteResult> {
+  host = cacheAssetReads(host);
   const doc = new DOMParser().parseFromString(data, "text/html");
   let ownerDir = parentDir(htmlPath);
 
@@ -315,9 +354,7 @@ export async function rewriteLocalAssets(
       // Relative references target the external base URL, not the vault.
       return { html: data, assetCount: 0 };
     }
-    const baseDir = baseHref.startsWith("/")
-      ? normalizeVaultPath(baseHref)
-      : normalizeVaultPath(ownerDir ? `${ownerDir}/${baseHref}` : baseHref);
+    const baseDir = resolveAgainstDir(ownerDir, baseHref);
     if (baseDir === null) {
       return { html: data, assetCount: 0 };
     }
@@ -339,9 +376,23 @@ export async function rewriteLocalAssets(
     onRewrite();
   };
 
-  for (const element of Array.from(doc.querySelectorAll(INLINE_SRC_SELECTOR))) {
-    if (!enabled(element.tagName.toLowerCase())) continue;
-    await rewriteRef(element, "src");
+  for (const rule of ATTRIBUTE_REWRITES) {
+    if (rule.directOnly && options.mode !== "direct") continue;
+    for (const element of Array.from(doc.querySelectorAll(rule.selector))) {
+      if (!enabled(element.tagName.toLowerCase())) continue;
+      for (const attribute of rule.attributes) {
+        if (!rule.srcset) {
+          await rewriteRef(element, attribute);
+          continue;
+        }
+        const value = element.getAttribute(attribute);
+        if (value === null) continue;
+        element.setAttribute(
+          attribute,
+          await rewriteSrcset(value, ownerDir, htmlPath, host, options, onRewrite),
+        );
+      }
+    }
   }
 
   if (enabled("script") && options.mode === "inline") {
@@ -354,7 +405,7 @@ export async function rewriteLocalAssets(
       const text = await readTextAsset(resolved.vaultPath, host, options.maxInlineBytes);
       if (text === null) continue;
       element.removeAttribute("src");
-      element.textContent = text.replace(/<\/script/gi, "<\\/script");
+      element.textContent = escapeClosingTag(text, "script");
       onRewrite();
     }
   }
@@ -406,48 +457,12 @@ export async function rewriteLocalAssets(
       const style = doc.createElement("style");
       const media = element.getAttribute("media");
       if (media) style.setAttribute("media", media);
-      style.textContent = rewritten.replace(/<\/style/gi, "<\\/style");
+      style.textContent = escapeClosingTag(rewritten, "style");
       element.replaceWith(style);
       onRewrite();
     }
   }
 
-  if (enabled("a") && options.mode === "direct") {
-    // The opaque-origin sandbox refuses app:// navigation, so inline mode leaves anchors verbatim.
-    for (const element of Array.from(doc.querySelectorAll("a[href]"))) {
-      const value = element.getAttribute("href");
-      if (value === null) continue;
-      const resolved = resolveAssetUrl(value, ownerDir, htmlPath, host);
-      if (!resolved) continue;
-      element.setAttribute("href", resolved);
-      onRewrite();
-    }
-  }
-
-  for (const element of Array.from(doc.querySelectorAll(SVG_REFERENCE_SELECTOR))) {
-    if (!enabled(element.tagName.toLowerCase())) continue;
-    await rewriteRef(element, "href");
-    await rewriteRef(element, "xlink:href");
-  }
-  if (enabled("video")) {
-    for (const element of Array.from(doc.querySelectorAll("video[poster]"))) {
-      await rewriteRef(element, "poster");
-    }
-  }
-  if (enabled("object")) {
-    for (const element of Array.from(doc.querySelectorAll("object[data]"))) {
-      await rewriteRef(element, "data");
-    }
-  }
-  for (const element of Array.from(doc.querySelectorAll(SRCSET_SELECTOR))) {
-    if (!enabled(element.tagName.toLowerCase())) continue;
-    const value = element.getAttribute("srcset");
-    if (value === null) continue;
-    element.setAttribute(
-      "srcset",
-      await rewriteSrcset(value, ownerDir, htmlPath, host, options, onRewrite),
-    );
-  }
   if (enabled("style")) {
     for (const element of Array.from(doc.querySelectorAll("style"))) {
       const css = element.textContent;
@@ -472,14 +487,52 @@ export async function rewriteLocalAssets(
   return { html: `${doctype}${doc.documentElement.outerHTML}`, assetCount };
 }
 
+const cachedHosts = new WeakSet<LocalAssetHost>();
+
+/**
+ * Memoizes size lookups and file reads for one rewrite pass, so a document referencing the same
+ * asset many times reads it once. Created fresh per top-level rewrite, so refreshes stay fresh.
+ */
+function cacheAssetReads(host: LocalAssetHost): LocalAssetHost {
+  if (cachedHosts.has(host)) return host;
+  const sizes = new Map<string, number | null>();
+  const reads = new Map<string, Promise<ArrayBuffer | null>>();
+  const cached: LocalAssetHost = {
+    getFileSize: (vaultPath) => {
+      if (!sizes.has(vaultPath)) sizes.set(vaultPath, host.getFileSize(vaultPath));
+      return sizes.get(vaultPath) ?? null;
+    },
+    getResourceUrl: (vaultPath) => host.getResourceUrl(vaultPath),
+    resolveLink: (linkText, fromPath) => host.resolveLink(linkText, fromPath),
+    readBinary: (vaultPath) => {
+      let read = reads.get(vaultPath);
+      if (!read) {
+        read = host.readBinary(vaultPath);
+        reads.set(vaultPath, read);
+      }
+      return read;
+    },
+  };
+  cachedHosts.add(cached);
+  return cached;
+}
+
+async function readAssetBytes(
+  vaultPath: string,
+  host: LocalAssetHost,
+  maxBytes: number,
+): Promise<ArrayBuffer | null> {
+  const size = host.getFileSize(vaultPath);
+  if (size === null || size > maxBytes) return null;
+  return host.readBinary(vaultPath);
+}
+
 async function readTextAsset(
   vaultPath: string,
   host: LocalAssetHost,
   maxInlineBytes: number,
 ): Promise<string | null> {
-  const size = host.getFileSize(vaultPath);
-  if (size === null || size > maxInlineBytes) return null;
-  const data = await host.readBinary(vaultPath);
+  const data = await readAssetBytes(vaultPath, host, maxInlineBytes);
   return data === null ? null : new TextDecoder("utf-8").decode(data);
 }
 
@@ -487,20 +540,25 @@ function textToDataUri(mime: string, text: string): string {
   return `data:${mime};charset=utf-8;base64,${encodeBase64(new TextEncoder().encode(text))}`;
 }
 
+/** Keeps inlined content from terminating its host element; valid inside JS and CSS strings. */
+function escapeClosingTag(text: string, tag: string): string {
+  return text.replace(new RegExp(`</${tag}`, "gi"), `<\\/${tag}`);
+}
+
 async function replaceAsync(
   input: string,
   pattern: RegExp,
   replacer: (match: RegExpMatchArray) => Promise<string | null>,
 ): Promise<string> {
+  const matches = Array.from(input.matchAll(pattern));
+  const replacements = await Promise.all(matches.map((match) => replacer(match)));
   let result = "";
   let lastIndex = 0;
-  for (const match of input.matchAll(pattern)) {
+  matches.forEach((match, matchIndex) => {
     const index = match.index ?? 0;
-    const replacement = await replacer(match);
-    result += input.slice(lastIndex, index);
-    result += replacement ?? match[0];
+    result += input.slice(lastIndex, index) + (replacements[matchIndex] ?? match[0]);
     lastIndex = index + match[0].length;
-  }
+  });
   return result + input.slice(lastIndex);
 }
 

@@ -27,7 +27,15 @@ const {
   resolveAssetUrl,
   rewriteCss,
   rewriteSrcset,
+  sandboxValue,
 } = await import(pathToFileURL("dist/local-assets.test.mjs"));
+
+const sandboxCombinations = [
+  { assetMode: "inline", enableScripts: false },
+  { assetMode: "inline", enableScripts: true },
+  { assetMode: "direct", enableScripts: false },
+  { assetMode: "direct", enableScripts: true },
+];
 
 const encoder = new TextEncoder();
 const vaultFiles = new Map([
@@ -71,6 +79,19 @@ const resolveData = (raw) => resolveAssetData(raw, "reports", "reports/page.html
 const chartDataUri = "data:image/png;base64,AQID";
 
 const assertions = [
+  // Sandbox invariants
+  [sandboxValue({ assetMode: "inline", enableScripts: false }) === "", "strict sandbox by default"],
+  [sandboxValue({ assetMode: "inline", enableScripts: true }) === "allow-scripts", "inline mode can enable scripts"],
+  [sandboxValue({ assetMode: "direct", enableScripts: false }) === "allow-same-origin", "direct mode grants same-origin"],
+  [sandboxValue({ assetMode: "direct", enableScripts: true }) === "allow-same-origin", "direct mode ignores the scripts setting"],
+  [
+    sandboxCombinations.every((combination) => {
+      const sandbox = sandboxValue(combination);
+      return !(sandbox.includes("allow-scripts") && sandbox.includes("allow-same-origin"));
+    }),
+    "scripts and same-origin are never combined",
+  ],
+
   // URL classification
   [isLocalUrl("img/chart.png"), "relative path is local"],
   [isLocalUrl("/root.png"), "vault-absolute path is local"],

@@ -88,15 +88,6 @@
   color: var(--text-normal);
 }
 
-.html-page-viewer__scripts-toggle {
-  border: 1px solid var(--html-page-viewer-border);
-}
-
-.html-page-viewer__scripts-toggle.is-enabled {
-  background: color-mix(in srgb, var(--interactive-accent) 20%, transparent);
-  color: var(--text-normal);
-}
-
 .html-page-viewer__security {
   align-items: center;
   color: var(--html-page-viewer-muted);

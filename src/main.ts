@@ -12,14 +12,15 @@ import {
 } from "obsidian";
 
 import {
-  AssetMode,
   DEFAULT_REWRITE_TAGS,
   LocalAssetHost,
   MAX_INLINE_BYTES,
   RewriteOptions,
   RewriteResult,
+  SandboxSettings,
   parseTagList,
   rewriteLocalAssets,
+  sandboxValue,
 } from "./local-assets";
 
 const VIEW_TYPE_HTML_PAGE_VIEWER = "html-page-viewer";
@@ -27,9 +28,7 @@ const HTML_EXTENSIONS = ["html", "htm"];
 
 type ViewMode = "rendered" | "source";
 
-export interface HtmlPageViewerSettings {
-  assetMode: AssetMode;
-  enableScripts: boolean;
+interface HtmlPageViewerSettings extends SandboxSettings {
   rewriteTags: string;
   maxInlineMib: number;
 }
@@ -102,7 +101,6 @@ class HtmlPageViewerView extends TextFileView {
   private readonly plugin: HtmlPageViewerPlugin;
   private mode: ViewMode = "rendered";
   private iframe: HTMLIFrameElement | null = null;
-  private renderVersion = 0;
 
   constructor(leaf: WorkspaceLeaf, plugin: HtmlPageViewerPlugin) {
     super(leaf);
@@ -166,7 +164,7 @@ class HtmlPageViewerView extends TextFileView {
 
     const settings = this.plugin.settings;
     const direct = settings.assetMode === "direct";
-    const scriptsEnabled = !direct && settings.enableScripts;
+    const scriptsEnabled = sandboxValue(settings) === "allow-scripts";
     const security = container.createDiv({ cls: "html-page-viewer__security" });
     security.createSpan({
       cls: "html-page-viewer__security-pill",
@@ -238,13 +236,12 @@ class HtmlPageViewerView extends TextFileView {
     });
     iframe.setAttribute("sandbox", sandboxValue(this.plugin.settings));
     this.iframe = iframe;
-    void this.populatePreview(iframe, file, ++this.renderVersion, assetsNote);
+    void this.populatePreview(iframe, file, assetsNote);
   }
 
   private async populatePreview(
     iframe: HTMLIFrameElement,
     file: TFile,
-    version: number,
     assetsNote: HTMLElement,
   ): Promise<void> {
     let preview: RewriteResult | null = null;
@@ -259,7 +256,8 @@ class HtmlPageViewerView extends TextFileView {
       console.error("HTML Page Viewer: local asset rewrite failed, loading file directly", error);
     }
 
-    if (version !== this.renderVersion || !iframe.isConnected) return;
+    // Every re-render empties contentEl, so a stale async completion always sees a detached frame.
+    if (!iframe.isConnected) return;
 
     if (preview) {
       iframe.srcdoc = preview.html;
@@ -366,7 +364,7 @@ class HtmlPageViewerSettingTab extends PluginSettingTab {
     new Setting(containerEl)
       .setName("Rewritten elements")
       .setDesc(
-        'Comma-separated element types the URL rewriting runs on. Supported: a, audio, embed, iframe, image, img, input, link, object, script, source, style, track, use, video. "style" covers style blocks and style attributes. Clear the list to disable rewriting.',
+        `Comma-separated element types the URL rewriting runs on. Supported: ${DEFAULT_REWRITE_TAGS.join(", ")}. "style" covers style blocks and style attributes. Clear the list to disable rewriting.`,
       )
       .addText((text) =>
         text
@@ -393,15 +391,6 @@ class HtmlPageViewerSettingTab extends PluginSettingTab {
           }),
       );
   }
-}
-
-export function sandboxValue(
-  settings: Pick<HtmlPageViewerSettings, "assetMode" | "enableScripts">,
-): string {
-  // Never combine with allow-scripts: a same-origin srcdoc inherits Obsidian's own origin, and
-  // scripts there could reach the app object and, on desktop, Node via the parent window.
-  if (settings.assetMode === "direct") return "allow-same-origin";
-  return settings.enableScripts ? "allow-scripts" : "";
 }
 
 function renderSource(parent: HTMLElement, data: string): void {
