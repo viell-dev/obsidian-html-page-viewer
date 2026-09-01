@@ -20,6 +20,8 @@ const assertions = [
   [main.includes("getFirstLinkpathDest"), "asset host uses Obsidian link resolution"],
   [localAssets.includes("SCHEME_PATTERN"), "asset rewriting skips URLs with explicit schemes"],
   [localAssets.includes("if (segments.length === 0) return null"), "paths escaping the vault root are rejected"],
+  [localAssets.includes("MAX_INLINE_BYTES"), "assets are inlined with a size cap"],
+  [localAssets.includes(";base64,"), "assets inline as base64 data URIs"],
   [!main.includes("navigator.clipboard"), "plugin code has no clipboard access"],
   [!localAssets.includes("navigator.clipboard"), "asset module has no clipboard access"],
   [!styles.includes("!important"), "styles do not use important overrides"],

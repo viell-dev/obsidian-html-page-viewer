@@ -19,7 +19,7 @@ HTML Page Viewer is a read-only Obsidian plugin for opening `.html` and `.htm` f
 
 - Opens `.html` and `.htm` files in a dedicated Obsidian view.
 - Shows a rendered preview by default.
-- Displays local vault assets: relative and vault-absolute references to images, stylesheets, media, and other files are translated to Obsidian resource URLs so they render inside the sandbox.
+- Displays local vault assets: relative and vault-absolute references to images, stylesheets, media, and other files are inlined as `data:` URIs so they render inside the sandbox.
 - Resolves asset paths the Obsidian way too: shortest-path matches (such as attachments in a configured attachment folder) work as a fallback.
 - Provides a source view with lightweight HTML syntax highlighting and line numbers.
 - Includes a toolbar for Rendered/Source, Refresh, and Scripts OFF/ON.
@@ -44,11 +44,13 @@ Rendered HTML may still request external resources, such as images, stylesheets,
 
 ### Local asset translation
 
-To display vault-stored assets inside the sandbox, the rendered preview rewrites local references (`src`, `href`, `srcset`, `poster`, `object` `data`, SVG `href`/`xlink:href`, and CSS `url()`/`@import` values) to Obsidian's own resource URLs before loading the document into the iframe:
+To display vault-stored assets inside the sandbox, the rendered preview rewrites local references (`src`, `href`, `srcset`, `poster`, `object` `data`, SVG `href`/`xlink:href`, and CSS `url()`/`@import` values) before loading the document into the iframe. Because the sandbox never grants `allow-same-origin`, the document has an opaque origin and cannot use responses fetched from Obsidian's `app://` resource URLs, so assets are inlined as `data:` URIs instead:
 
-- Only references written in the HTML document itself are translated; the plugin never exposes resource URLs for files the document does not reference.
-- Paths that resolve outside the vault (for example `../../outside.png` from the vault root) are rejected and left untouched.
-- References that do not resolve to an existing vault file are left untouched.
+- Images, media, fonts, and other binary assets up to 8 MiB are embedded as base64 `data:` URIs; larger files fall back to resource URLs and may not display.
+- Local stylesheets are inlined as `<style>` elements with their own `url()` and `@import` references rewritten; local scripts are inlined as inline scripts (still subject to the Scripts toggle); local iframes are inlined as nested `srcdoc` documents.
+- Anchor (`a href`) links are translated to resource URLs, not inlined.
+- Only references written in the HTML document itself are translated; the plugin never embeds files the document does not reference.
+- Paths that resolve outside the vault (for example `../../outside.png` from the vault root) are rejected and left untouched, as are references that do not resolve to an existing vault file.
 - Documents with an external `<base href>` are not rewritten, because their relative references intentionally target that base URL.
 - The sandbox flags are unchanged: translation never adds `allow-same-origin` or any other permission.
 

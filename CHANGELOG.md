@@ -4,9 +4,11 @@ All notable changes to HTML Page Viewer are documented here.
 
 ## 0.2.0 - 2026-09-01
 
-- Add local asset support: the rendered preview now rewrites local references to Obsidian resource
-  URLs, so vault-stored images, stylesheets, scripts, media, and SVG references display inside the
-  sandboxed iframe.
+- Add local asset support: the rendered preview now inlines local references as `data:` URIs, so
+  vault-stored images, stylesheets, scripts, media, and SVG references display inside the
+  sandboxed iframe. Inlining is required because the sandbox's opaque origin cannot use responses
+  from Obsidian's `app://` resource URLs.
+- Cap inlining at 8 MiB per file; larger files fall back to Obsidian resource URLs.
 - Resolve relative paths (including `.`/`..`), vault-absolute paths, percent-encoded names, and
   Obsidian shortest-path links (for example attachments stored in a configured attachment folder).
 - Rewrite `src`, `href`, `srcset`, `poster`, `object` `data`, SVG `href`/`xlink:href`, inline

@@ -15,35 +15,51 @@ await esbuild.build({
 });
 
 const {
+  MAX_INLINE_BYTES,
+  encodeBase64,
   isLocalUrl,
+  mimeTypeFor,
   normalizeVaultPath,
   parentDir,
+  resolveAssetData,
   resolveAssetUrl,
-  rewriteCssUrls,
+  rewriteCss,
   rewriteSrcset,
 } = await import(pathToFileURL("dist/local-assets.test.mjs"));
 
-const vaultFiles = new Set([
-  "reports/img/chart.png",
-  "reports/img/chart@2x.png",
-  "reports/style.css",
-  "reports/spaced name.png",
-  "attachments/logo.svg",
-  "root.png",
+const encoder = new TextEncoder();
+const vaultFiles = new Map([
+  ["reports/img/chart.png", { bytes: new Uint8Array([1, 2, 3]) }],
+  ["reports/img/chart@2x.png", { bytes: new Uint8Array([4, 5, 6]) }],
+  ["reports/style.css", { bytes: encoder.encode('.a { background: url("img/chart.png"); }') }],
+  ["reports/huge.bin", { bytes: new Uint8Array([7]), size: MAX_INLINE_BYTES + 1 }],
+  ["reports/spaced name.png", { bytes: new Uint8Array([8]) }],
+  ["attachments/logo.svg", { bytes: encoder.encode("<svg/>") }],
+  ["root.png", { bytes: new Uint8Array([9]) }],
 ]);
 
 const host = {
+  getFileSize: (vaultPath) => {
+    const file = vaultFiles.get(vaultPath);
+    return file ? file.size ?? file.bytes.length : null;
+  },
   getResourceUrl: (vaultPath) =>
     vaultFiles.has(vaultPath) ? `app://vault/${vaultPath}?123` : null,
-  resolveLink: (linkText, fromPath) => {
-    for (const path of vaultFiles) {
+  resolveLink: (linkText) => {
+    for (const path of vaultFiles.keys()) {
       if (path === linkText || path.endsWith(`/${linkText}`)) return path;
     }
     return null;
   },
+  readBinary: async (vaultPath) => {
+    const file = vaultFiles.get(vaultPath);
+    return file ? file.bytes.buffer.slice(0) : null;
+  },
 };
 
-const resolve = (raw) => resolveAssetUrl(raw, "reports", "reports/page.html", host);
+const resolveUrl = (raw) => resolveAssetUrl(raw, "reports", "reports/page.html", host);
+const resolveData = (raw) => resolveAssetData(raw, "reports", "reports/page.html", host);
+const chartDataUri = "data:image/png;base64,AQID";
 
 const assertions = [
   // URL classification
@@ -56,65 +72,88 @@ const assertions = [
   [!isLocalUrl("mailto:me@example.com"), "mailto URL is not local"],
   [!isLocalUrl(""), "empty URL is not local"],
 
-  // Path normalization
+  // Path normalization and helpers
   [normalizeVaultPath("a/./b/../c") === "a/c", "dot segments collapse"],
   [normalizeVaultPath("../escape.png") === null, "paths escaping the vault are rejected"],
   [normalizeVaultPath("a//b") === "a/b", "duplicate separators collapse"],
   [parentDir("reports/page.html") === "reports", "parent dir of nested file"],
   [parentDir("page.html") === "", "parent dir of root file is empty"],
+  [mimeTypeFor("a/b.PNG") === "image/png", "mime lookup is case-insensitive"],
+  [mimeTypeFor("a/b.unknown") === "application/octet-stream", "unknown extension gets octet-stream"],
+  [encodeBase64(new Uint8Array([1, 2, 3])) === "AQID", "base64 encoding of bytes"],
 
-  // Resolution against the vault
-  [resolve("img/chart.png") === "app://vault/reports/img/chart.png?123", "relative asset resolves"],
-  [resolve("./img/chart.png") === "app://vault/reports/img/chart.png?123", "explicit ./ resolves"],
-  [resolve("../root.png") === "app://vault/root.png?123", "parent traversal inside vault resolves"],
-  [resolve("/attachments/logo.svg") === "app://vault/attachments/logo.svg?123", "vault-absolute path resolves"],
-  [resolve("spaced%20name.png") === "app://vault/reports/spaced name.png?123", "percent-encoded name resolves"],
-  [resolve("img/chart.png#top") === "app://vault/reports/img/chart.png?123#top", "fragment survives resolution"],
-  [resolve("img/chart.png?v=1") === "app://vault/reports/img/chart.png?123", "query string is dropped"],
-  [resolve("logo.svg") === "app://vault/attachments/logo.svg?123", "shortest-path link resolution fallback"],
-  [resolve("missing.png") === null, "unknown asset stays unresolved"],
-  [resolve("https://example.com/a.png") === null, "external URL stays unresolved"],
+  // Resource URL resolution (anchor + oversize fallback path)
+  [resolveUrl("img/chart.png") === "app://vault/reports/img/chart.png?123", "relative asset resolves to resource URL"],
+  [resolveUrl("../root.png") === "app://vault/root.png?123", "parent traversal inside vault resolves"],
+  [resolveUrl("/attachments/logo.svg") === "app://vault/attachments/logo.svg?123", "vault-absolute path resolves"],
+  [resolveUrl("spaced%20name.png") === "app://vault/reports/spaced name.png?123", "percent-encoded name resolves"],
+  [resolveUrl("logo.svg") === "app://vault/attachments/logo.svg?123", "shortest-path link resolution fallback"],
+  [resolveUrl("missing.png") === null, "unknown asset stays unresolved"],
+  [resolveUrl("https://example.com/a.png") === null, "external URL stays unresolved"],
 
-  // srcset rewriting
-  [
-    rewriteSrcset(
-      "img/chart.png 1x, img/chart@2x.png 2x, https://cdn.example.com/x.png 3x",
-      "reports",
-      "reports/page.html",
-      host,
-      () => {},
-    ) ===
-      "app://vault/reports/img/chart.png?123 1x, app://vault/reports/img/chart@2x.png?123 2x, https://cdn.example.com/x.png 3x",
-    "srcset rewrites local candidates and keeps external ones",
-  ],
+  // Data URI inlining
+  [(await resolveData("img/chart.png")) === chartDataUri, "relative asset inlines as data URI"],
+  [(await resolveData("./img/chart.png")) === chartDataUri, "explicit ./ inlines"],
+  [(await resolveData("img/chart.png#top")) === `${chartDataUri}#top`, "fragment survives inlining"],
+  [(await resolveData("img/chart.png?v=1")) === chartDataUri, "query string is dropped"],
+  [(await resolveData("logo.svg")) === `data:image/svg+xml;base64,${btoa("<svg/>")}`, "link-resolved asset inlines"],
+  [(await resolveData("huge.bin")) === "app://vault/reports/huge.bin?123", "oversized asset falls back to resource URL"],
+  [(await resolveData("missing.png")) === null, "unknown asset stays unresolved for inlining"],
+];
 
-  // CSS rewriting
+// srcset rewriting
+assertions.push([
+  (await rewriteSrcset(
+    "img/chart.png 1x, img/chart@2x.png 2x, https://cdn.example.com/x.png 3x",
+    "reports",
+    "reports/page.html",
+    host,
+    () => {},
+  )) === `${chartDataUri} 1x, data:image/png;base64,BAUG 2x, https://cdn.example.com/x.png 3x`,
+  "srcset inlines local candidates and keeps external ones",
+]);
+
+// CSS rewriting
+const css = (input) => rewriteCss(input, "reports", "reports/page.html", host, () => {});
+assertions.push(
   [
-    rewriteCssUrls("body { background: url('img/chart.png'); }", "reports", "reports/page.html", host, () => {}) ===
-      'body { background: url("app://vault/reports/img/chart.png?123"); }',
-    "quoted css url() rewrites",
+    (await css("body { background: url('img/chart.png'); }")) ===
+      `body { background: url("${chartDataUri}"); }`,
+    "quoted css url() inlines",
   ],
   [
-    rewriteCssUrls("body { background: url(img/chart.png); }", "reports", "reports/page.html", host, () => {}) ===
-      'body { background: url("app://vault/reports/img/chart.png?123"); }',
-    "bare css url() rewrites",
+    (await css("body { background: url(img/chart.png); }")) ===
+      `body { background: url("${chartDataUri}"); }`,
+    "bare css url() inlines",
   ],
   [
-    rewriteCssUrls('@import "style.css";', "reports", "reports/page.html", host, () => {}) ===
-      '@import "app://vault/reports/style.css?123";',
-    "css @import string rewrites",
-  ],
-  [
-    rewriteCssUrls("body { background: url(https://cdn.example.com/x.png); }", "reports", "reports/page.html", host, () => {}) ===
+    (await css("body { background: url(https://cdn.example.com/x.png); }")) ===
       "body { background: url(https://cdn.example.com/x.png); }",
     "external css url() is untouched",
   ],
-];
+);
+
+const imported = await css('@import "style.css" screen;');
+const importedInner = /data:text\/css;charset=utf-8;base64,([A-Za-z0-9+/=]+)/.exec(imported);
+assertions.push(
+  [imported.startsWith('@import url("data:text/css;charset=utf-8;base64,'), "css @import inlines as data css"],
+  [imported.endsWith('") screen;'), "css @import keeps its media condition"],
+  [
+    importedInner !== null && atob(importedInner[1]) === `.a { background: url("${chartDataUri}"); }`,
+    "imported css has its own urls inlined relative to the css file",
+  ],
+);
 
 let rewriteCount = 0;
-rewriteCssUrls("a { background: url(img/chart.png) } b { background: url(nope.png) }", "reports", "reports/page.html", host, () => {
-  rewriteCount += 1;
-});
+await rewriteCss(
+  "a { background: url(img/chart.png) } b { background: url(nope.png) }",
+  "reports",
+  "reports/page.html",
+  host,
+  () => {
+    rewriteCount += 1;
+  },
+);
 assertions.push([rewriteCount === 1, "rewrite callback fires once per resolved css url"]);
 
 const failures = assertions.filter(([passes]) => !passes).map(([, label]) => label);

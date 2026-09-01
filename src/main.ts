@@ -51,6 +51,7 @@ class HtmlPageViewerView extends TextFileView {
   private mode: ViewMode = "rendered";
   private scriptsEnabled = false;
   private iframe: HTMLIFrameElement | null = null;
+  private renderVersion = 0;
 
   constructor(leaf: WorkspaceLeaf) {
     super(leaf);
@@ -107,8 +108,6 @@ class HtmlPageViewerView extends TextFileView {
       return;
     }
 
-    const preview = this.mode === "rendered" ? this.buildPreview(this.file) : null;
-
     const security = container.createDiv({ cls: "html-page-viewer__security" });
     security.createSpan({
       cls: "html-page-viewer__security-pill",
@@ -119,19 +118,14 @@ class HtmlPageViewerView extends TextFileView {
         ? "Sandbox allows scripts only; forms, popups, top navigation, and same-origin access remain blocked."
         : "Sandbox blocks scripts, forms, popups, top navigation, and same-origin access.",
     });
-    if (preview && preview.assetCount > 0) {
-      security.createSpan({
-        cls: "html-page-viewer__assets-note",
-        text: `${preview.assetCount} local vault ${preview.assetCount === 1 ? "link" : "links"} resolved for this preview.`,
-      });
-    }
 
     if (this.mode === "source") {
       renderSource(container, this.data);
       return;
     }
 
-    this.renderIframe(container, this.file, preview);
+    const assetsNote = security.createSpan({ cls: "html-page-viewer__assets-note" });
+    this.renderIframe(container, this.file, assetsNote);
   }
 
   private renderTitle(parent: HTMLElement): void {
@@ -182,7 +176,7 @@ class HtmlPageViewerView extends TextFileView {
     });
   }
 
-  private renderIframe(parent: HTMLElement, file: TFile, preview: RewriteResult | null): void {
+  private renderIframe(parent: HTMLElement, file: TFile, assetsNote: HTMLElement): void {
     const frameWrap = parent.createDiv({ cls: "html-page-viewer__frame-wrap" });
     const iframe = frameWrap.createEl("iframe", {
       cls: "html-page-viewer__frame",
@@ -192,31 +186,54 @@ class HtmlPageViewerView extends TextFileView {
       },
     });
     iframe.setAttribute("sandbox", sandboxValue(this.scriptsEnabled));
-    if (preview) {
-      iframe.srcdoc = preview.html;
-    } else {
-      iframe.src = withCacheBust(this.app.vault.getResourcePath(file));
-    }
     this.iframe = iframe;
+    void this.populatePreview(iframe, file, ++this.renderVersion, assetsNote);
   }
 
-  private buildPreview(file: TFile): RewriteResult | null {
+  private async populatePreview(
+    iframe: HTMLIFrameElement,
+    file: TFile,
+    version: number,
+    assetsNote: HTMLElement,
+  ): Promise<void> {
+    let preview: RewriteResult | null = null;
     try {
-      return rewriteLocalAssets(this.data, file.path, this.createAssetHost());
+      preview = await rewriteLocalAssets(this.data, file.path, this.createAssetHost());
     } catch (error) {
       console.error("HTML Page Viewer: local asset rewrite failed, loading file directly", error);
-      return null;
+    }
+
+    if (version !== this.renderVersion || !iframe.isConnected) return;
+
+    if (preview) {
+      iframe.srcdoc = preview.html;
+      if (preview.assetCount > 0) {
+        assetsNote.setText(
+          `${preview.assetCount} local vault ${preview.assetCount === 1 ? "link" : "links"} resolved for this preview.`,
+        );
+      }
+    } else {
+      iframe.src = withCacheBust(this.app.vault.getResourcePath(file));
     }
   }
 
   private createAssetHost(): LocalAssetHost {
+    const findFile = (vaultPath: string): TFile | null => {
+      const target = this.app.vault.getAbstractFileByPath(vaultPath);
+      return target instanceof TFile ? target : null;
+    };
     return {
+      getFileSize: (vaultPath) => findFile(vaultPath)?.stat.size ?? null,
       getResourceUrl: (vaultPath) => {
-        const target = this.app.vault.getAbstractFileByPath(vaultPath);
-        return target instanceof TFile ? this.app.vault.getResourcePath(target) : null;
+        const target = findFile(vaultPath);
+        return target ? this.app.vault.getResourcePath(target) : null;
       },
       resolveLink: (linkText, fromPath) =>
         this.app.metadataCache.getFirstLinkpathDest(linkText, fromPath)?.path ?? null,
+      readBinary: async (vaultPath) => {
+        const target = findFile(vaultPath);
+        return target ? this.app.vault.readBinary(target) : null;
+      },
     };
   }
 
