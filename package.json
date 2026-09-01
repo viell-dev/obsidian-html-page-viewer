@@ -1,6 +1,6 @@
 {
   "name": "obsidian-html-page-viewer",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "Read-only rendered and source HTML page viewer.",
   "license": "MIT",
   "author": "Viggo Meesters",
@@ -16,7 +16,7 @@
   "scripts": {
     "build": "NODE_ENV=production node esbuild.config.mjs",
     "dev": "node esbuild.config.mjs",
-    "test": "node scripts/smoke-test.mjs"
+    "test": "node scripts/smoke-test.mjs && node scripts/local-assets-test.mjs"
   },
   "dependencies": {},
   "devDependencies": {

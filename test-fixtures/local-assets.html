@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <!-- Local assets fixture: every reference below points at a vault-local file. -->
+  <meta charset="utf-8">
+  <title>Local assets fixture</title>
+  <link rel="stylesheet" href="local-assets.css">
+  <style>
+    .inline-style-block {
+      background-image: url("sample-asset.svg");
+      background-repeat: no-repeat;
+      background-size: 48px 48px;
+      min-height: 48px;
+      padding-left: 60px;
+    }
+  </style>
+</head>
+<body>
+  <h1>Local assets fixture</h1>
+  <p>Relative image: <img src="sample-asset.svg" alt="Relative" width="48" height="48"></p>
+  <p>Dot-relative image: <img src="./sample-asset.svg" alt="Dot relative" width="48" height="48"></p>
+  <p>Encoded image name: <img src="sample%2Dasset.svg" alt="Encoded" width="48" height="48"></p>
+  <p>Srcset image: <img srcset="sample-asset.svg 1x, sample-asset.svg 2x" src="sample-asset.svg" alt="Srcset" width="48" height="48"></p>
+  <p class="linked-css">This paragraph is styled by the linked stylesheet.</p>
+  <p class="inline-style-block">This block gets its background from an inline style block.</p>
+  <p style="background-image: url('sample-asset.svg'); background-repeat: no-repeat; background-size: 24px 24px; padding-left: 32px;">
+    This paragraph gets its background from a style attribute.
+  </p>
+  <p>External image (left untouched, loads only when online):
+    <img src="https://img.shields.io/badge/external-reference-blue" alt="External badge"></p>
+</body>
+</html>

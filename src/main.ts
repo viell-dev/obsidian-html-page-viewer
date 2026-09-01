@@ -7,6 +7,8 @@ import {
   setIcon,
 } from "obsidian";
 
+import { LocalAssetHost, RewriteResult, rewriteLocalAssets } from "./local-assets";
+
 const VIEW_TYPE_HTML_PAGE_VIEWER = "html-page-viewer";
 const HTML_EXTENSIONS = ["html", "htm"];
 
@@ -105,6 +107,8 @@ class HtmlPageViewerView extends TextFileView {
       return;
     }
 
+    const preview = this.mode === "rendered" ? this.buildPreview(this.file) : null;
+
     const security = container.createDiv({ cls: "html-page-viewer__security" });
     security.createSpan({
       cls: "html-page-viewer__security-pill",
@@ -115,13 +119,19 @@ class HtmlPageViewerView extends TextFileView {
         ? "Sandbox allows scripts only; forms, popups, top navigation, and same-origin access remain blocked."
         : "Sandbox blocks scripts, forms, popups, top navigation, and same-origin access.",
     });
+    if (preview && preview.assetCount > 0) {
+      security.createSpan({
+        cls: "html-page-viewer__assets-note",
+        text: `${preview.assetCount} local vault ${preview.assetCount === 1 ? "link" : "links"} resolved for this preview.`,
+      });
+    }
 
     if (this.mode === "source") {
       renderSource(container, this.data);
       return;
     }
 
-    this.renderIframe(container);
+    this.renderIframe(container, this.file, preview);
   }
 
   private renderTitle(parent: HTMLElement): void {
@@ -172,13 +182,7 @@ class HtmlPageViewerView extends TextFileView {
     });
   }
 
-  private renderIframe(parent: HTMLElement): void {
-    const file = this.file;
-    if (!file) {
-      renderMessage(parent, "No HTML file is attached to this viewer.");
-      return;
-    }
-
+  private renderIframe(parent: HTMLElement, file: TFile, preview: RewriteResult | null): void {
     const frameWrap = parent.createDiv({ cls: "html-page-viewer__frame-wrap" });
     const iframe = frameWrap.createEl("iframe", {
       cls: "html-page-viewer__frame",
@@ -188,8 +192,32 @@ class HtmlPageViewerView extends TextFileView {
       },
     });
     iframe.setAttribute("sandbox", sandboxValue(this.scriptsEnabled));
-    iframe.src = withCacheBust(this.app.vault.getResourcePath(file));
+    if (preview) {
+      iframe.srcdoc = preview.html;
+    } else {
+      iframe.src = withCacheBust(this.app.vault.getResourcePath(file));
+    }
     this.iframe = iframe;
+  }
+
+  private buildPreview(file: TFile): RewriteResult | null {
+    try {
+      return rewriteLocalAssets(this.data, file.path, this.createAssetHost());
+    } catch (error) {
+      console.error("HTML Page Viewer: local asset rewrite failed, loading file directly", error);
+      return null;
+    }
+  }
+
+  private createAssetHost(): LocalAssetHost {
+    return {
+      getResourceUrl: (vaultPath) => {
+        const target = this.app.vault.getAbstractFileByPath(vaultPath);
+        return target instanceof TFile ? this.app.vault.getResourcePath(target) : null;
+      },
+      resolveLink: (linkText, fromPath) =>
+        this.app.metadataCache.getFirstLinkpathDest(linkText, fromPath)?.path ?? null,
+    };
   }
 
   private async reloadFile(): Promise<void> {

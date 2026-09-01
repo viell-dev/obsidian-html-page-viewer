@@ -19,6 +19,8 @@ HTML Page Viewer is a read-only Obsidian plugin for opening `.html` and `.htm` f
 
 - Opens `.html` and `.htm` files in a dedicated Obsidian view.
 - Shows a rendered preview by default.
+- Displays local vault assets: relative and vault-absolute references to images, stylesheets, media, and other files are translated to Obsidian resource URLs so they render inside the sandbox.
+- Resolves asset paths the Obsidian way too: shortest-path matches (such as attachments in a configured attachment folder) work as a fallback.
 - Provides a source view with lightweight HTML syntax highlighting and line numbers.
 - Includes a toolbar for Rendered/Source, Refresh, and Scripts OFF/ON.
 - Keeps scripts disabled by default.
@@ -39,6 +41,16 @@ HTML files can execute powerful browser behavior if a viewer permits it. HTML Pa
 - The plugin code does not edit vault files.
 
 Rendered HTML may still request external resources, such as images, stylesheets, fonts, or scripts, when the HTML document itself references them. This is normal browser behavior for rendered HTML pages and is separate from plugin code making network requests.
+
+### Local asset translation
+
+To display vault-stored assets inside the sandbox, the rendered preview rewrites local references (`src`, `href`, `srcset`, `poster`, `object` `data`, SVG `href`/`xlink:href`, and CSS `url()`/`@import` values) to Obsidian's own resource URLs before loading the document into the iframe:
+
+- Only references written in the HTML document itself are translated; the plugin never exposes resource URLs for files the document does not reference.
+- Paths that resolve outside the vault (for example `../../outside.png` from the vault root) are rejected and left untouched.
+- References that do not resolve to an existing vault file are left untouched.
+- Documents with an external `<base href>` are not rewritten, because their relative references intentionally target that base URL.
+- The sandbox flags are unchanged: translation never adds `allow-same-origin` or any other permission.
 
 ## Why read-only?
 
@@ -124,8 +136,8 @@ Steps:
 The current release is ready for review:
 
 - root `README.md`, `LICENSE`, and `manifest.json` exist
-- `manifest.json.version` is `0.1.1`
-- GitHub release `0.1.1` exists
+- `manifest.json.version` is `0.2.0`
+- a GitHub release whose tag matches `manifest.json.version` must exist before submission
 - release assets include `main.js`, `manifest.json`, and `styles.css`
 - `versions.json` maps supported Obsidian versions
 

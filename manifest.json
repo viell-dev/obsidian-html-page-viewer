@@ -1,7 +1,7 @@
 {
   "id": "html-page-viewer",
   "name": "HTML Page Viewer",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "minAppVersion": "1.5.0",
   "description": "Open .html and .htm files as a sandboxed rendered preview or syntax-highlighted source.",
   "author": "Viggo Meesters",
