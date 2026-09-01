@@ -1,26 +1,59 @@
 import {
+  App,
   Notice,
   Plugin,
+  PluginSettingTab,
+  Setting,
   TFile,
   TextFileView,
   WorkspaceLeaf,
+  debounce,
   setIcon,
 } from "obsidian";
 
-import { LocalAssetHost, RewriteResult, rewriteLocalAssets } from "./local-assets";
+import {
+  AssetMode,
+  DEFAULT_REWRITE_TAGS,
+  LocalAssetHost,
+  MAX_INLINE_BYTES,
+  RewriteOptions,
+  RewriteResult,
+  parseTagList,
+  rewriteLocalAssets,
+} from "./local-assets";
 
 const VIEW_TYPE_HTML_PAGE_VIEWER = "html-page-viewer";
 const HTML_EXTENSIONS = ["html", "htm"];
 
 type ViewMode = "rendered" | "source";
 
+export interface HtmlPageViewerSettings {
+  assetMode: AssetMode;
+  enableScripts: boolean;
+  rewriteTags: string;
+  maxInlineMib: number;
+}
+
+const DEFAULT_SETTINGS: HtmlPageViewerSettings = {
+  assetMode: "inline",
+  enableScripts: false,
+  rewriteTags: DEFAULT_REWRITE_TAGS.join(", "),
+  maxInlineMib: MAX_INLINE_BYTES / (1024 * 1024),
+};
+
 export default class HtmlPageViewerPlugin extends Plugin {
+  settings: HtmlPageViewerSettings = { ...DEFAULT_SETTINGS };
+
+  private readonly queueViewRefresh = debounce(() => this.refreshViews(), 400);
+
   async onload(): Promise<void> {
+    await this.loadSettings();
     this.registerView(
       VIEW_TYPE_HTML_PAGE_VIEWER,
-      (leaf) => new HtmlPageViewerView(leaf),
+      (leaf) => new HtmlPageViewerView(leaf, this),
     );
     this.registerExtensions(HTML_EXTENSIONS, VIEW_TYPE_HTML_PAGE_VIEWER);
+    this.addSettingTab(new HtmlPageViewerSettingTab(this.app, this));
 
     this.addCommand({
       id: "open-current-html-in-viewer",
@@ -45,16 +78,35 @@ export default class HtmlPageViewerPlugin extends Plugin {
       active: true,
     });
   }
+
+  async loadSettings(): Promise<void> {
+    this.settings = { ...DEFAULT_SETTINGS, ...((await this.loadData()) ?? {}) };
+  }
+
+  async saveSettings(): Promise<void> {
+    await this.saveData(this.settings);
+    this.queueViewRefresh();
+  }
+
+  refreshViews(): void {
+    for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE_HTML_PAGE_VIEWER)) {
+      const view = leaf.view;
+      if (view instanceof HtmlPageViewerView) {
+        view.refresh();
+      }
+    }
+  }
 }
 
 class HtmlPageViewerView extends TextFileView {
+  private readonly plugin: HtmlPageViewerPlugin;
   private mode: ViewMode = "rendered";
-  private scriptsEnabled = false;
   private iframe: HTMLIFrameElement | null = null;
   private renderVersion = 0;
 
-  constructor(leaf: WorkspaceLeaf) {
+  constructor(leaf: WorkspaceLeaf, plugin: HtmlPageViewerPlugin) {
     super(leaf);
+    this.plugin = plugin;
   }
 
   getViewType(): string {
@@ -84,6 +136,10 @@ class HtmlPageViewerView extends TextFileView {
     this.contentEl.empty();
   }
 
+  refresh(): void {
+    this.render();
+  }
+
   private render(): void {
     const container = this.contentEl;
     container.empty();
@@ -108,15 +164,20 @@ class HtmlPageViewerView extends TextFileView {
       return;
     }
 
+    const settings = this.plugin.settings;
+    const direct = settings.assetMode === "direct";
+    const scriptsEnabled = !direct && settings.enableScripts;
     const security = container.createDiv({ cls: "html-page-viewer__security" });
     security.createSpan({
       cls: "html-page-viewer__security-pill",
-      text: this.scriptsEnabled ? "Scripts ON" : "Scripts OFF",
+      text: direct ? "Same-origin" : scriptsEnabled ? "Scripts ON" : "Scripts OFF",
     });
     security.createSpan({
-      text: this.scriptsEnabled
-        ? "Sandbox allows scripts only; forms, popups, top navigation, and same-origin access remain blocked."
-        : "Sandbox blocks scripts, forms, popups, top navigation, and same-origin access.",
+      text: direct
+        ? "Sandbox grants same-origin access so direct vault links can load; scripts, forms, popups, and top navigation remain blocked."
+        : scriptsEnabled
+          ? "Sandbox allows scripts only; forms, popups, top navigation, and same-origin access remain blocked."
+          : "Sandbox blocks scripts, forms, popups, top navigation, and same-origin access.",
     });
 
     if (this.mode === "source") {
@@ -164,16 +225,6 @@ class HtmlPageViewerView extends TextFileView {
     refreshButton.addEventListener("click", () => {
       void this.reloadFile();
     });
-
-    const scriptsButton = createTextButton(toolbar, this.scriptsEnabled ? "Scripts ON" : "Scripts OFF");
-    scriptsButton.addClass("html-page-viewer__scripts-toggle");
-    scriptsButton.toggleClass("is-enabled", this.scriptsEnabled);
-    scriptsButton.setAttribute("aria-pressed", String(this.scriptsEnabled));
-    scriptsButton.setAttribute("title", "Toggle JavaScript for this viewer tab");
-    scriptsButton.addEventListener("click", () => {
-      this.scriptsEnabled = !this.scriptsEnabled;
-      this.render();
-    });
   }
 
   private renderIframe(parent: HTMLElement, file: TFile, assetsNote: HTMLElement): void {
@@ -185,7 +236,7 @@ class HtmlPageViewerView extends TextFileView {
         referrerpolicy: "no-referrer",
       },
     });
-    iframe.setAttribute("sandbox", sandboxValue(this.scriptsEnabled));
+    iframe.setAttribute("sandbox", sandboxValue(this.plugin.settings));
     this.iframe = iframe;
     void this.populatePreview(iframe, file, ++this.renderVersion, assetsNote);
   }
@@ -198,7 +249,12 @@ class HtmlPageViewerView extends TextFileView {
   ): Promise<void> {
     let preview: RewriteResult | null = null;
     try {
-      preview = await rewriteLocalAssets(this.data, file.path, this.createAssetHost());
+      preview = await rewriteLocalAssets(
+        this.data,
+        file.path,
+        this.createAssetHost(),
+        this.rewriteOptions(),
+      );
     } catch (error) {
       console.error("HTML Page Viewer: local asset rewrite failed, loading file directly", error);
     }
@@ -215,6 +271,15 @@ class HtmlPageViewerView extends TextFileView {
     } else {
       iframe.src = withCacheBust(this.app.vault.getResourcePath(file));
     }
+  }
+
+  private rewriteOptions(): RewriteOptions {
+    const settings = this.plugin.settings;
+    return {
+      mode: settings.assetMode,
+      tags: parseTagList(settings.rewriteTags),
+      maxInlineBytes: settings.maxInlineMib * 1024 * 1024,
+    };
   }
 
   private createAssetHost(): LocalAssetHost {
@@ -254,8 +319,89 @@ class HtmlPageViewerView extends TextFileView {
   }
 }
 
-export function sandboxValue(scriptsEnabled: boolean): string {
-  return scriptsEnabled ? "allow-scripts" : "";
+class HtmlPageViewerSettingTab extends PluginSettingTab {
+  private readonly plugin: HtmlPageViewerPlugin;
+
+  constructor(app: App, plugin: HtmlPageViewerPlugin) {
+    super(app, plugin);
+    this.plugin = plugin;
+  }
+
+  display(): void {
+    const { containerEl } = this;
+    containerEl.empty();
+
+    new Setting(containerEl)
+      .setName("Asset loading mode")
+      .setDesc(
+        "How local vault references are made to render inside the sandbox. Inline assets embeds them as data: URIs under the strictest sandbox. Direct vault links grants the preview same-origin access so Obsidian resource URLs load directly; JavaScript is always disabled in that mode.",
+      )
+      .addDropdown((dropdown) =>
+        dropdown
+          .addOption("inline", "Inline assets (recommended)")
+          .addOption("direct", "Direct vault links (same-origin, scripts disabled)")
+          .setValue(this.plugin.settings.assetMode)
+          .onChange(async (value) => {
+            this.plugin.settings.assetMode = value === "direct" ? "direct" : "inline";
+            await this.plugin.saveSettings();
+            this.display();
+          }),
+      );
+
+    new Setting(containerEl)
+      .setName("Enable JavaScript")
+      .setDesc(
+        "Adds allow-scripts to the sandbox for rendered previews. Available only in inline mode; scripts are never combined with same-origin access.",
+      )
+      .addToggle((toggle) =>
+        toggle
+          .setValue(this.plugin.settings.enableScripts)
+          .setDisabled(this.plugin.settings.assetMode === "direct")
+          .onChange(async (value) => {
+            this.plugin.settings.enableScripts = value;
+            await this.plugin.saveSettings();
+          }),
+      );
+
+    new Setting(containerEl)
+      .setName("Rewritten elements")
+      .setDesc(
+        'Comma-separated element types the URL rewriting runs on. Supported: a, audio, embed, iframe, image, img, input, link, object, script, source, style, track, use, video. "style" covers style blocks and style attributes. Clear the list to disable rewriting.',
+      )
+      .addText((text) =>
+        text
+          .setPlaceholder(DEFAULT_REWRITE_TAGS.join(", "))
+          .setValue(this.plugin.settings.rewriteTags)
+          .onChange(async (value) => {
+            this.plugin.settings.rewriteTags = value;
+            await this.plugin.saveSettings();
+          }),
+      );
+
+    new Setting(containerEl)
+      .setName("Maximum inline size (MiB)")
+      .setDesc("Inline mode leaves files larger than this untouched instead of embedding them.")
+      .addText((text) =>
+        text
+          .setPlaceholder(String(DEFAULT_SETTINGS.maxInlineMib))
+          .setValue(String(this.plugin.settings.maxInlineMib))
+          .onChange(async (value) => {
+            const parsed = Number(value);
+            if (!Number.isFinite(parsed) || parsed <= 0) return;
+            this.plugin.settings.maxInlineMib = parsed;
+            await this.plugin.saveSettings();
+          }),
+      );
+  }
+}
+
+export function sandboxValue(
+  settings: Pick<HtmlPageViewerSettings, "assetMode" | "enableScripts">,
+): string {
+  // Never combine with allow-scripts: a same-origin srcdoc inherits Obsidian's own origin, and
+  // scripts there could reach the app object and, on desktop, Node via the parent window.
+  if (settings.assetMode === "direct") return "allow-same-origin";
+  return settings.enableScripts ? "allow-scripts" : "";
 }
 
 function renderSource(parent: HTMLElement, data: string): void {

@@ -11,9 +11,14 @@ const localAssetsFixture = fs.readFileSync("test-fixtures/local-assets.html", "u
 const assertions = [
   [manifest.id === "html-page-viewer", "manifest id is html-page-viewer"],
   [manifest.version === "0.2.0", "manifest version is 0.2.0"],
-  [main.includes("private scriptsEnabled = false"), "scripts default to off"],
-  [main.includes("sandboxValue(this.scriptsEnabled)"), "iframe sandbox is derived from script toggle"],
-  [main.includes("allow-scripts"), "script toggle grants only allow-scripts"],
+  [main.includes("enableScripts: false"), "scripts default to off"],
+  [main.includes("sandboxValue(this.plugin.settings)"), "iframe sandbox is derived from settings"],
+  [main.includes("allow-scripts"), "script setting grants only allow-scripts"],
+  [
+    !main.includes("allow-scripts allow-same-origin") && !main.includes("allow-same-origin allow-scripts"),
+    "scripts and same-origin are never combined",
+  ],
+  [main.includes('if (settings.assetMode === "direct") return "allow-same-origin"'), "direct mode returns before the scripts check"],
   [main.includes("renderSource(container, this.data)"), "source view code path exists"],
   [main.includes("iframe.srcdoc = preview.html"), "rendered view loads the rewritten document"],
   [main.includes("this.app.vault.getResourcePath(file)"), "direct vault resource path remains as fallback"],

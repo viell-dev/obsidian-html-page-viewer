@@ -17,6 +17,12 @@ All notable changes to HTML Page Viewer are documented here.
   path changes the resolution root.
 - Show a note in the security strip with the number of local links resolved for the current
   preview.
+- Add a settings tab: asset loading mode ("Inline assets" data URIs vs "Direct vault links" with
+  `allow-same-origin` granted and scripts unconditionally disabled), the JavaScript setting
+  (moved from the per-view toolbar), a comma-separated list of element types the rewriting runs
+  on, and the maximum inline size.
+- Leave references verbatim when they cannot be made to work: oversized files, unresolvable
+  paths, and anchors in inline mode.
 - Fall back to the previous direct resource-path loading if rewriting fails.
 - Add a local-assets test fixture and a unit test suite for the path translation logic.
 

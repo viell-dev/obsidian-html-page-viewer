@@ -9,17 +9,51 @@ export interface LocalAssetHost {
   readBinary(vaultPath: string): Promise<ArrayBuffer | null>;
 }
 
+export type AssetMode = "inline" | "direct";
+
+export interface RewriteOptions {
+  /**
+   * "inline" embeds assets as data: URIs, the only form the opaque-origin sandbox can use.
+   * "direct" translates to Obsidian resource URLs, which render only when the iframe is granted
+   * allow-same-origin (and therefore never allow-scripts).
+   */
+  mode: AssetMode;
+  /** Element types (lowercase tag names) the rewriting runs on; "style" also covers style attributes. */
+  tags: ReadonlySet<string>;
+  /** Inline mode leaves files larger than this untouched instead of embedding them. */
+  maxInlineBytes: number;
+}
+
 export interface RewriteResult {
   html: string;
   assetCount: number;
 }
 
 /**
- * The sandboxed iframe never gets allow-same-origin, so its opaque origin cannot use responses
- * fetched from Obsidian's app:// resource URLs. Assets up to this size are therefore inlined as
- * data: URIs, which involve no fetch at all; larger files fall back to resource URLs.
+ * The sandboxed iframe never gets allow-same-origin in inline mode, so its opaque origin cannot
+ * use responses fetched from Obsidian's app:// resource URLs. Assets up to this size are
+ * therefore inlined as data: URIs, which involve no fetch at all; larger files are left
+ * untouched, because a rewritten URL that still cannot render is worse than the original.
  */
 export const MAX_INLINE_BYTES = 8 * 1024 * 1024;
+
+export const DEFAULT_REWRITE_TAGS: readonly string[] = [
+  "a",
+  "audio",
+  "embed",
+  "iframe",
+  "image",
+  "img",
+  "input",
+  "link",
+  "object",
+  "script",
+  "source",
+  "style",
+  "track",
+  "use",
+  "video",
+];
 
 const MAX_CSS_IMPORT_DEPTH = 3;
 const MAX_HTML_DEPTH = 2;
@@ -65,6 +99,15 @@ const MIME_TYPES: Record<string, string> = {
   woff: "font/woff",
   woff2: "font/woff2",
 };
+
+export function parseTagList(value: string): Set<string> {
+  return new Set(
+    value
+      .split(",")
+      .map((entry) => entry.trim().toLowerCase())
+      .filter((entry) => entry),
+  );
+}
 
 export function isLocalUrl(raw: string): boolean {
   const value = raw.trim();
@@ -152,21 +195,29 @@ export async function resolveAssetData(
   ownerDir: string,
   fromPath: string,
   host: LocalAssetHost,
+  maxInlineBytes = MAX_INLINE_BYTES,
 ): Promise<string | null> {
   const resolved = resolveAssetPath(raw, ownerDir, fromPath, host);
   if (!resolved) return null;
 
   const { vaultPath, fragment } = resolved;
   const size = host.getFileSize(vaultPath);
-  if (size !== null && size <= MAX_INLINE_BYTES) {
-    const data = await host.readBinary(vaultPath);
-    if (data !== null) {
-      return `data:${mimeTypeFor(vaultPath)};base64,${encodeBase64(data)}${fragment}`;
-    }
-  }
+  if (size === null || size > maxInlineBytes) return null;
+  const data = await host.readBinary(vaultPath);
+  if (data === null) return null;
+  return `data:${mimeTypeFor(vaultPath)};base64,${encodeBase64(data)}${fragment}`;
+}
 
-  const resourceUrl = host.getResourceUrl(vaultPath);
-  return resourceUrl ? `${resourceUrl}${fragment}` : null;
+export async function resolveAssetRef(
+  raw: string,
+  ownerDir: string,
+  fromPath: string,
+  host: LocalAssetHost,
+  options: RewriteOptions,
+): Promise<string | null> {
+  return options.mode === "direct"
+    ? resolveAssetUrl(raw, ownerDir, fromPath, host)
+    : resolveAssetData(raw, ownerDir, fromPath, host, options.maxInlineBytes);
 }
 
 export async function rewriteSrcset(
@@ -174,6 +225,7 @@ export async function rewriteSrcset(
   ownerDir: string,
   fromPath: string,
   host: LocalAssetHost,
+  options: RewriteOptions,
   onRewrite: () => void,
 ): Promise<string> {
   const entries = await Promise.all(
@@ -181,7 +233,7 @@ export async function rewriteSrcset(
       const trimmed = entry.trim();
       if (!trimmed) return trimmed;
       const [url, ...descriptor] = trimmed.split(/\s+/);
-      const resolved = await resolveAssetData(url, ownerDir, fromPath, host);
+      const resolved = await resolveAssetRef(url, ownerDir, fromPath, host, options);
       if (!resolved) return trimmed;
       onRewrite();
       return [resolved, ...descriptor].join(" ");
@@ -195,22 +247,30 @@ export async function rewriteCss(
   ownerDir: string,
   fromPath: string,
   host: LocalAssetHost,
+  options: RewriteOptions,
   onRewrite: () => void,
   depth = 0,
 ): Promise<string> {
   const withImports = await replaceAsync(css, CSS_IMPORT_PATTERN, async (match) => {
     const raw = match[1] ?? match[2] ?? match[3] ?? match[4] ?? match[5];
     const condition = match[6] ?? "";
+    if (options.mode === "direct") {
+      const resolved = resolveAssetUrl(raw, ownerDir, fromPath, host);
+      if (!resolved) return null;
+      onRewrite();
+      return `@import url("${resolved}")${condition};`;
+    }
     if (depth >= MAX_CSS_IMPORT_DEPTH) return null;
     const resolved = resolveAssetPath(raw, ownerDir, fromPath, host);
     if (!resolved) return null;
-    const text = await readTextAsset(resolved.vaultPath, host);
+    const text = await readTextAsset(resolved.vaultPath, host, options.maxInlineBytes);
     if (text === null) return null;
     const rewritten = await rewriteCss(
       text,
       parentDir(resolved.vaultPath),
       resolved.vaultPath,
       host,
+      options,
       onRewrite,
       depth + 1,
     );
@@ -219,11 +279,12 @@ export async function rewriteCss(
   });
 
   return replaceAsync(withImports, CSS_URL_PATTERN, async (match) => {
-    const resolved = await resolveAssetData(
+    const resolved = await resolveAssetRef(
       match[1] ?? match[2] ?? match[3],
       ownerDir,
       fromPath,
       host,
+      options,
     );
     if (!resolved) return null;
     onRewrite();
@@ -232,13 +293,16 @@ export async function rewriteCss(
 }
 
 /**
- * Inlines every local vault reference in an HTML document so the page can render inside a
- * sandboxed srcdoc iframe with an opaque origin. Untouched documents are returned verbatim.
+ * Rewrites local vault references in an HTML document so the page can render inside the
+ * sandboxed srcdoc iframe. References that cannot be made to work (unresolvable, oversized in
+ * inline mode, or anchors/scripts the sandbox would refuse anyway) are left verbatim.
+ * Untouched documents are returned verbatim.
  */
 export async function rewriteLocalAssets(
   data: string,
   htmlPath: string,
   host: LocalAssetHost,
+  options: RewriteOptions,
   depth = 0,
 ): Promise<RewriteResult> {
   const doc = new DOMParser().parseFromString(data, "text/html");
@@ -261,124 +325,146 @@ export async function rewriteLocalAssets(
     base.remove();
   }
 
+  const enabled = (tag: string): boolean => options.tags.has(tag);
   let assetCount = 0;
   const onRewrite = (): void => {
     assetCount += 1;
   };
-  const inlineAttribute = async (element: Element, attribute: string): Promise<void> => {
+  const rewriteRef = async (element: Element, attribute: string): Promise<void> => {
     const value = element.getAttribute(attribute);
     if (value === null) return;
-    const resolved = await resolveAssetData(value, ownerDir, htmlPath, host);
+    const resolved = await resolveAssetRef(value, ownerDir, htmlPath, host, options);
     if (!resolved) return;
     element.setAttribute(attribute, resolved);
     onRewrite();
   };
 
   for (const element of Array.from(doc.querySelectorAll(INLINE_SRC_SELECTOR))) {
-    await inlineAttribute(element, "src");
+    if (!enabled(element.tagName.toLowerCase())) continue;
+    await rewriteRef(element, "src");
   }
 
-  for (const element of Array.from(doc.querySelectorAll("script[src]"))) {
-    const src = element.getAttribute("src");
-    if (src === null) continue;
-    const resolved = resolveAssetPath(src, ownerDir, htmlPath, host);
-    if (!resolved) continue;
-    const text = await readTextAsset(resolved.vaultPath, host);
-    if (text === null) {
-      await inlineAttribute(element, "src");
-      continue;
+  if (enabled("script") && options.mode === "inline") {
+    // Direct mode never grants allow-scripts, so scripts are left verbatim there.
+    for (const element of Array.from(doc.querySelectorAll("script[src]"))) {
+      const src = element.getAttribute("src");
+      if (src === null) continue;
+      const resolved = resolveAssetPath(src, ownerDir, htmlPath, host);
+      if (!resolved) continue;
+      const text = await readTextAsset(resolved.vaultPath, host, options.maxInlineBytes);
+      if (text === null) continue;
+      element.removeAttribute("src");
+      element.textContent = text.replace(/<\/script/gi, "<\\/script");
+      onRewrite();
     }
-    element.removeAttribute("src");
-    element.textContent = text.replace(/<\/script/gi, "<\\/script");
-    onRewrite();
   }
 
-  for (const element of Array.from(doc.querySelectorAll("iframe[src]"))) {
-    const src = element.getAttribute("src");
-    if (src === null) continue;
-    const resolved = resolveAssetPath(src, ownerDir, htmlPath, host);
-    if (resolved && mimeTypeFor(resolved.vaultPath) === "text/html" && depth < MAX_HTML_DEPTH) {
-      const text = await readTextAsset(resolved.vaultPath, host);
-      if (text !== null) {
-        const nested = await rewriteLocalAssets(text, resolved.vaultPath, host, depth + 1);
-        element.removeAttribute("src");
-        element.setAttribute("srcdoc", nested.html);
-        assetCount += nested.assetCount;
-        onRewrite();
+  if (enabled("iframe")) {
+    for (const element of Array.from(doc.querySelectorAll("iframe[src]"))) {
+      const src = element.getAttribute("src");
+      if (src === null) continue;
+      if (options.mode === "direct") {
+        await rewriteRef(element, "src");
         continue;
       }
+      const resolved = resolveAssetPath(src, ownerDir, htmlPath, host);
+      if (!resolved || mimeTypeFor(resolved.vaultPath) !== "text/html" || depth >= MAX_HTML_DEPTH) {
+        continue;
+      }
+      const text = await readTextAsset(resolved.vaultPath, host, options.maxInlineBytes);
+      if (text === null) continue;
+      const nested = await rewriteLocalAssets(text, resolved.vaultPath, host, options, depth + 1);
+      element.removeAttribute("src");
+      element.setAttribute("srcdoc", nested.html);
+      assetCount += nested.assetCount;
+      onRewrite();
     }
-    await inlineAttribute(element, "src");
   }
 
-  for (const element of Array.from(doc.querySelectorAll("link[href]"))) {
-    const rel = (element.getAttribute("rel") ?? "").toLowerCase();
-    if (!rel.split(/\s+/).includes("stylesheet")) {
-      await inlineAttribute(element, "href");
-      continue;
+  if (enabled("link")) {
+    for (const element of Array.from(doc.querySelectorAll("link[href]"))) {
+      const rel = (element.getAttribute("rel") ?? "").toLowerCase();
+      if (options.mode === "direct" || !rel.split(/\s+/).includes("stylesheet")) {
+        await rewriteRef(element, "href");
+        continue;
+      }
+      const href = element.getAttribute("href");
+      if (href === null) continue;
+      const resolved = resolveAssetPath(href, ownerDir, htmlPath, host);
+      if (!resolved) continue;
+      const text = await readTextAsset(resolved.vaultPath, host, options.maxInlineBytes);
+      if (text === null) continue;
+      const rewritten = await rewriteCss(
+        text,
+        parentDir(resolved.vaultPath),
+        resolved.vaultPath,
+        host,
+        options,
+        onRewrite,
+        1,
+      );
+      const style = doc.createElement("style");
+      const media = element.getAttribute("media");
+      if (media) style.setAttribute("media", media);
+      style.textContent = rewritten.replace(/<\/style/gi, "<\\/style");
+      element.replaceWith(style);
+      onRewrite();
     }
-    const href = element.getAttribute("href");
-    if (href === null) continue;
-    const resolved = resolveAssetPath(href, ownerDir, htmlPath, host);
-    if (!resolved) continue;
-    const text = await readTextAsset(resolved.vaultPath, host);
-    if (text === null) {
-      await inlineAttribute(element, "href");
-      continue;
-    }
-    const rewritten = await rewriteCss(
-      text,
-      parentDir(resolved.vaultPath),
-      resolved.vaultPath,
-      host,
-      onRewrite,
-      1,
-    );
-    const style = doc.createElement("style");
-    const media = element.getAttribute("media");
-    if (media) style.setAttribute("media", media);
-    style.textContent = rewritten.replace(/<\/style/gi, "<\\/style");
-    element.replaceWith(style);
-    onRewrite();
   }
 
-  for (const element of Array.from(doc.querySelectorAll("a[href]"))) {
-    // Anchors navigate rather than embed; data: navigation is blocked, so use resource URLs.
-    const value = element.getAttribute("href");
-    if (value === null) continue;
-    const resolved = resolveAssetUrl(value, ownerDir, htmlPath, host);
-    if (!resolved) continue;
-    element.setAttribute("href", resolved);
-    onRewrite();
+  if (enabled("a") && options.mode === "direct") {
+    // The opaque-origin sandbox refuses app:// navigation, so inline mode leaves anchors verbatim.
+    for (const element of Array.from(doc.querySelectorAll("a[href]"))) {
+      const value = element.getAttribute("href");
+      if (value === null) continue;
+      const resolved = resolveAssetUrl(value, ownerDir, htmlPath, host);
+      if (!resolved) continue;
+      element.setAttribute("href", resolved);
+      onRewrite();
+    }
   }
 
   for (const element of Array.from(doc.querySelectorAll(SVG_REFERENCE_SELECTOR))) {
-    await inlineAttribute(element, "href");
-    await inlineAttribute(element, "xlink:href");
+    if (!enabled(element.tagName.toLowerCase())) continue;
+    await rewriteRef(element, "href");
+    await rewriteRef(element, "xlink:href");
   }
-  for (const element of Array.from(doc.querySelectorAll("video[poster]"))) {
-    await inlineAttribute(element, "poster");
+  if (enabled("video")) {
+    for (const element of Array.from(doc.querySelectorAll("video[poster]"))) {
+      await rewriteRef(element, "poster");
+    }
   }
-  for (const element of Array.from(doc.querySelectorAll("object[data]"))) {
-    await inlineAttribute(element, "data");
+  if (enabled("object")) {
+    for (const element of Array.from(doc.querySelectorAll("object[data]"))) {
+      await rewriteRef(element, "data");
+    }
   }
   for (const element of Array.from(doc.querySelectorAll(SRCSET_SELECTOR))) {
+    if (!enabled(element.tagName.toLowerCase())) continue;
     const value = element.getAttribute("srcset");
     if (value === null) continue;
-    element.setAttribute("srcset", await rewriteSrcset(value, ownerDir, htmlPath, host, onRewrite));
+    element.setAttribute(
+      "srcset",
+      await rewriteSrcset(value, ownerDir, htmlPath, host, options, onRewrite),
+    );
   }
-  for (const element of Array.from(doc.querySelectorAll("style"))) {
-    const css = element.textContent;
-    if (css === null) continue;
-    element.textContent = await rewriteCss(css, ownerDir, htmlPath, host, onRewrite);
-  }
-  for (const element of Array.from(doc.querySelectorAll("[style]"))) {
-    const css = element.getAttribute("style");
-    if (css === null) continue;
-    element.setAttribute("style", await rewriteCss(css, ownerDir, htmlPath, host, onRewrite));
+  if (enabled("style")) {
+    for (const element of Array.from(doc.querySelectorAll("style"))) {
+      const css = element.textContent;
+      if (css === null) continue;
+      element.textContent = await rewriteCss(css, ownerDir, htmlPath, host, options, onRewrite);
+    }
+    for (const element of Array.from(doc.querySelectorAll("[style]"))) {
+      const css = element.getAttribute("style");
+      if (css === null) continue;
+      element.setAttribute(
+        "style",
+        await rewriteCss(css, ownerDir, htmlPath, host, options, onRewrite),
+      );
+    }
   }
 
-  if (assetCount === 0 && !base) {
+  if (assetCount === 0) {
     return { html: data, assetCount: 0 };
   }
 
@@ -386,9 +472,13 @@ export async function rewriteLocalAssets(
   return { html: `${doctype}${doc.documentElement.outerHTML}`, assetCount };
 }
 
-async function readTextAsset(vaultPath: string, host: LocalAssetHost): Promise<string | null> {
+async function readTextAsset(
+  vaultPath: string,
+  host: LocalAssetHost,
+  maxInlineBytes: number,
+): Promise<string | null> {
   const size = host.getFileSize(vaultPath);
-  if (size === null || size > MAX_INLINE_BYTES) return null;
+  if (size === null || size > maxInlineBytes) return null;
   const data = await host.readBinary(vaultPath);
   return data === null ? null : new TextDecoder("utf-8").decode(data);
 }

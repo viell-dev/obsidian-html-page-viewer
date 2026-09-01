@@ -19,12 +19,13 @@ HTML Page Viewer is a read-only Obsidian plugin for opening `.html` and `.htm` f
 
 - Opens `.html` and `.htm` files in a dedicated Obsidian view.
 - Shows a rendered preview by default.
-- Displays local vault assets: relative and vault-absolute references to images, stylesheets, media, and other files are inlined as `data:` URIs so they render inside the sandbox.
+- Displays local vault assets: relative and vault-absolute references to images, stylesheets, media, and other files are rewritten so they render inside the sandbox.
 - Resolves asset paths the Obsidian way too: shortest-path matches (such as attachments in a configured attachment folder) work as a fallback.
+- Offers two asset loading modes: inline `data:` URIs under the strictest sandbox (default), or direct vault links with same-origin access and scripts disabled.
+- Lets you choose which element types the URL rewriting runs on.
 - Provides a source view with lightweight HTML syntax highlighting and line numbers.
-- Includes a toolbar for Rendered/Source, Refresh, and Scripts OFF/ON.
-- Keeps scripts disabled by default.
-- Enables scripts only for the current viewer tab when explicitly toggled on.
+- Includes a toolbar for Rendered/Source and Refresh.
+- Keeps scripts disabled by default; enabling them is a deliberate settings change, not a per-tab toggle.
 - Renders through a sandboxed iframe.
 - Blocks forms, popups, top-level navigation, and same-origin access.
 - Stays read-only by design: it never writes back to HTML files.
@@ -33,9 +34,10 @@ HTML Page Viewer is a read-only Obsidian plugin for opening `.html` and `.htm` f
 
 HTML files can execute powerful browser behavior if a viewer permits it. HTML Page Viewer uses a conservative default:
 
-- Scripts are **OFF** by default.
-- Scripts **ON** adds only `allow-scripts` to the iframe sandbox.
-- The iframe is never granted `allow-same-origin`, `allow-forms`, `allow-popups`, or `allow-top-navigation`.
+- Scripts are **OFF** by default and enabled only via the settings tab.
+- Enabling scripts adds only `allow-scripts` to the iframe sandbox.
+- The iframe is never granted `allow-forms`, `allow-popups`, or `allow-top-navigation`.
+- `allow-same-origin` is granted only in the opt-in "Direct vault links" mode, and that mode unconditionally disables scripts: a same-origin `srcdoc` document shares Obsidian's own origin, and scripts there could reach the app object and, on desktop, Node through the parent window. The mutual exclusion is enforced in the sandbox computation itself, not just in the settings UI.
 - The plugin code does not make network requests.
 - The plugin code does not read or write the system clipboard.
 - The plugin code does not edit vault files.
@@ -44,15 +46,22 @@ Rendered HTML may still request external resources, such as images, stylesheets,
 
 ### Local asset translation
 
-To display vault-stored assets inside the sandbox, the rendered preview rewrites local references (`src`, `href`, `srcset`, `poster`, `object` `data`, SVG `href`/`xlink:href`, and CSS `url()`/`@import` values) before loading the document into the iframe. Because the sandbox never grants `allow-same-origin`, the document has an opaque origin and cannot use responses fetched from Obsidian's `app://` resource URLs, so assets are inlined as `data:` URIs instead:
+To display vault-stored assets inside the sandbox, the rendered preview rewrites local references (`src`, `href`, `srcset`, `poster`, `object` `data`, SVG `href`/`xlink:href`, and CSS `url()`/`@import` values) before loading the document into the iframe. Two modes are available in settings:
 
-- Images, media, fonts, and other binary assets up to 8 MiB are embedded as base64 `data:` URIs; larger files fall back to resource URLs and may not display.
-- Local stylesheets are inlined as `<style>` elements with their own `url()` and `@import` references rewritten; local scripts are inlined as inline scripts (still subject to the Scripts toggle); local iframes are inlined as nested `srcdoc` documents.
-- Anchor (`a href`) links are translated to resource URLs, not inlined.
-- Only references written in the HTML document itself are translated; the plugin never embeds files the document does not reference.
+**Inline assets (default).** The sandbox never grants `allow-same-origin`, so the document has an opaque origin and cannot use responses fetched from Obsidian's `app://` resource URLs. Assets are therefore inlined as `data:` URIs, which involve no fetch at all:
+
+- Images, media, fonts, and other binary assets up to the configured size limit (default 8 MiB) are embedded as base64 `data:` URIs.
+- Local stylesheets are inlined as `<style>` elements with their own `url()` and `@import` references rewritten; local scripts are inlined as inline scripts (still subject to the JavaScript setting); local iframes are inlined as nested `srcdoc` documents.
+- References that cannot be made to work are left verbatim rather than rewritten: oversized files, unresolvable paths, and anchors (the opaque origin refuses `app://` navigation anyway). A rewritten URL that still cannot render is worse than the original.
+
+**Direct vault links.** References are translated to Obsidian `app://` resource URLs and the sandbox grants `allow-same-origin` so they load directly. Scripts are unconditionally disabled in this mode (see the security model above). This mode avoids embedding and its size limit, so it suits pages with large or streaming media, and anchors to other vault files work.
+
+Both modes share these rules:
+
+- Only references written in the HTML document itself are translated; the plugin never embeds or exposes files the document does not reference.
 - Paths that resolve outside the vault (for example `../../outside.png` from the vault root) are rejected and left untouched, as are references that do not resolve to an existing vault file.
 - Documents with an external `<base href>` are not rewritten, because their relative references intentionally target that base URL.
-- The sandbox flags are unchanged: translation never adds `allow-same-origin` or any other permission.
+- The "Rewritten elements" setting controls which element types the rewriting runs on; clearing it disables rewriting entirely.
 
 ## Why read-only?
 
@@ -90,9 +99,8 @@ Use the toolbar to:
 
 - switch between the rendered preview and source view
 - refresh the rendered preview after file changes
-- turn scripts on or off for the current viewer tab
 
-Scripts are intentionally per-tab. Opening a new HTML file starts with scripts off again.
+Everything else lives in **Settings -> HTML Page Viewer**: the asset loading mode, the JavaScript setting, the list of rewritten element types, and the maximum inline size. Settings changes re-render open viewers automatically.
 
 ## Development
 

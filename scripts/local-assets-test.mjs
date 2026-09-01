@@ -15,12 +15,14 @@ await esbuild.build({
 });
 
 const {
+  DEFAULT_REWRITE_TAGS,
   MAX_INLINE_BYTES,
   encodeBase64,
   isLocalUrl,
   mimeTypeFor,
   normalizeVaultPath,
   parentDir,
+  parseTagList,
   resolveAssetData,
   resolveAssetUrl,
   rewriteCss,
@@ -57,6 +59,13 @@ const host = {
   },
 };
 
+const inlineOptions = {
+  mode: "inline",
+  tags: new Set(DEFAULT_REWRITE_TAGS),
+  maxInlineBytes: MAX_INLINE_BYTES,
+};
+const directOptions = { ...inlineOptions, mode: "direct" };
+
 const resolveUrl = (raw) => resolveAssetUrl(raw, "reports", "reports/page.html", host);
 const resolveData = (raw) => resolveAssetData(raw, "reports", "reports/page.html", host);
 const chartDataUri = "data:image/png;base64,AQID";
@@ -72,6 +81,11 @@ const assertions = [
   [!isLocalUrl("mailto:me@example.com"), "mailto URL is not local"],
   [!isLocalUrl(""), "empty URL is not local"],
 
+  // Tag list parsing
+  [parseTagList("img, STYLE ,,link").size === 3, "tag list parses trimmed lowercase entries"],
+  [parseTagList("img, STYLE").has("style"), "tag list lowercases entries"],
+  [parseTagList("").size === 0, "empty tag list disables everything"],
+
   // Path normalization and helpers
   [normalizeVaultPath("a/./b/../c") === "a/c", "dot segments collapse"],
   [normalizeVaultPath("../escape.png") === null, "paths escaping the vault are rejected"],
@@ -82,7 +96,7 @@ const assertions = [
   [mimeTypeFor("a/b.unknown") === "application/octet-stream", "unknown extension gets octet-stream"],
   [encodeBase64(new Uint8Array([1, 2, 3])) === "AQID", "base64 encoding of bytes"],
 
-  // Resource URL resolution (anchor + oversize fallback path)
+  // Resource URL resolution (direct mode + anchors)
   [resolveUrl("img/chart.png") === "app://vault/reports/img/chart.png?123", "relative asset resolves to resource URL"],
   [resolveUrl("../root.png") === "app://vault/root.png?123", "parent traversal inside vault resolves"],
   [resolveUrl("/attachments/logo.svg") === "app://vault/attachments/logo.svg?123", "vault-absolute path resolves"],
@@ -97,7 +111,11 @@ const assertions = [
   [(await resolveData("img/chart.png#top")) === `${chartDataUri}#top`, "fragment survives inlining"],
   [(await resolveData("img/chart.png?v=1")) === chartDataUri, "query string is dropped"],
   [(await resolveData("logo.svg")) === `data:image/svg+xml;base64,${btoa("<svg/>")}`, "link-resolved asset inlines"],
-  [(await resolveData("huge.bin")) === "app://vault/reports/huge.bin?123", "oversized asset falls back to resource URL"],
+  [(await resolveData("huge.bin")) === null, "oversized asset is left untouched, not rewritten"],
+  [
+    (await resolveAssetData("img/chart.png", "reports", "reports/page.html", host, 1)) === null,
+    "custom size cap is honored",
+  ],
   [(await resolveData("missing.png")) === null, "unknown asset stays unresolved for inlining"],
 ];
 
@@ -108,13 +126,15 @@ assertions.push([
     "reports",
     "reports/page.html",
     host,
+    inlineOptions,
     () => {},
   )) === `${chartDataUri} 1x, data:image/png;base64,BAUG 2x, https://cdn.example.com/x.png 3x`,
   "srcset inlines local candidates and keeps external ones",
 ]);
 
 // CSS rewriting
-const css = (input) => rewriteCss(input, "reports", "reports/page.html", host, () => {});
+const css = (input, options = inlineOptions) =>
+  rewriteCss(input, "reports", "reports/page.html", host, options, () => {});
 assertions.push(
   [
     (await css("body { background: url('img/chart.png'); }")) ===
@@ -130,6 +150,16 @@ assertions.push(
     (await css("body { background: url(https://cdn.example.com/x.png); }")) ===
       "body { background: url(https://cdn.example.com/x.png); }",
     "external css url() is untouched",
+  ],
+  [
+    (await css("body { background: url(img/chart.png); }", directOptions)) ===
+      'body { background: url("app://vault/reports/img/chart.png?123"); }',
+    "direct mode css url() translates to resource URL",
+  ],
+  [
+    (await css('@import "style.css" screen;', directOptions)) ===
+      '@import url("app://vault/reports/style.css?123") screen;',
+    "direct mode css @import translates to resource URL",
   ],
 );
 
@@ -150,6 +180,7 @@ await rewriteCss(
   "reports",
   "reports/page.html",
   host,
+  inlineOptions,
   () => {
     rewriteCount += 1;
   },
