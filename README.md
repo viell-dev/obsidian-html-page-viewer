@@ -107,7 +107,7 @@ For local development, copy or symlink this repository into `.obsidian/plugins/h
 
 ## Releases
 
-This fork does not publish GitHub releases or tags; versions in `manifest.json` and `CHANGELOG.md` track the fork's own changes. The upstream release workflow under `.github/workflows/` is retained but unused because it only triggers on tags.
+This fork does not publish GitHub releases or tags; versions in `manifest.json` and `CHANGELOG.md` track the fork's own changes.
 
 ## Acknowledgements
 
